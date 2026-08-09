@@ -20,6 +20,7 @@ seeing the effort they requested in full responses and lifecycle SSE events.
 
 from __future__ import annotations
 
+import copy
 import fnmatch
 import json
 from typing import Any, AsyncGenerator, Optional
@@ -29,6 +30,14 @@ from litellm.integrations.custom_logger import CustomLogger
 
 _CONTEXT_KEY = "_reasoning_policy_context"
 _RESPONSE_CALL_TYPES = frozenset({"responses", "aresponses"})
+_EFFORT_LEVELS = {
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "xhigh": 4,
+    "max": 5,
+    "ultra": 6,
+}
 
 
 def _non_empty_string(value: Any) -> Optional[str]:
@@ -119,6 +128,14 @@ def _is_responses_call(data: dict[str, Any], call_type: str) -> bool:
     return False
 
 
+def _reasoning_token_multiplier(requested: str, effective: str) -> int:
+    requested_level = _EFFORT_LEVELS.get(requested.casefold())
+    effective_level = _EFFORT_LEVELS.get(effective.casefold())
+    if requested_level is None or effective_level is None:
+        return 1
+    return max(1, requested_level - effective_level)
+
+
 def apply_reasoning_policy(
     user_api_key_dict: Any,
     data: dict[str, Any],
@@ -145,14 +162,14 @@ def apply_reasoning_policy(
     )
 
     applied_fields: list[str] = []
-    effective_for_response: Optional[str] = None
+    effective_for_response = response_requested
     for field_name, owner, key, original in fields:
         effective = fallbacks.get(original.casefold())
         if not effective or effective == original:
             continue
         owner[key] = effective
         applied_fields.append(field_name)
-        if original == response_requested and effective_for_response is None:
+        if original == response_requested:
             effective_for_response = effective
 
     if not applied_fields:
@@ -164,10 +181,14 @@ def apply_reasoning_policy(
         data["litellm_metadata"] = litellm_metadata
     litellm_metadata[_CONTEXT_KEY] = {
         "requested": response_requested,
-        "effective": effective_for_response or fields[0][3],
+        "effective": effective_for_response,
         "model": model,
         "applied_fields": applied_fields,
         "restore_responses_api": _is_responses_call(data, call_type),
+        "reasoning_token_multiplier": _reasoning_token_multiplier(
+            response_requested,
+            effective_for_response,
+        ),
     }
     return data
 
@@ -179,9 +200,104 @@ def _policy_context(data: Any) -> Optional[dict[str, Any]]:
     if not isinstance(litellm_metadata, dict):
         return None
     context = litellm_metadata.get(_CONTEXT_KEY)
-    if not isinstance(context, dict) or context.get("restore_responses_api") is not True:
+    if not isinstance(context, dict):
         return None
     return context
+
+
+def _member(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
+
+
+def _set_member(value: Any, key: str, member: Any) -> None:
+    if isinstance(value, dict):
+        value[key] = member
+    else:
+        setattr(value, key, member)
+
+
+def _scale_usage_reasoning_tokens(usage: Any, multiplier: int) -> None:
+    if usage is None or multiplier <= 1:
+        return
+
+    for details_key, output_key in (
+        ("output_tokens_details", "output_tokens"),
+        ("completion_tokens_details", "completion_tokens"),
+    ):
+        details = _member(usage, details_key)
+        reasoning_tokens = _member(details, "reasoning_tokens")
+        if isinstance(reasoning_tokens, bool) or not isinstance(reasoning_tokens, int):
+            continue
+
+        reported_reasoning_tokens = reasoning_tokens * multiplier
+        token_delta = reported_reasoning_tokens - reasoning_tokens
+        _set_member(details, "reasoning_tokens", reported_reasoning_tokens)
+
+        output_tokens = _member(usage, output_key)
+        if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
+            _set_member(usage, output_key, output_tokens + token_delta)
+
+        total_tokens = _member(usage, "total_tokens")
+        if isinstance(total_tokens, int) and not isinstance(total_tokens, bool):
+            _set_member(usage, "total_tokens", total_tokens + token_delta)
+        return
+
+
+def _scale_reasoning_tokens_on_response(
+    response: Any,
+    multiplier: int,
+    seen: Optional[set[int]] = None,
+) -> Any:
+    if response is None or multiplier <= 1:
+        return response
+
+    if seen is None:
+        seen = set()
+    response_id = id(response)
+    if response_id in seen:
+        return response
+    seen.add(response_id)
+
+    nested_response = _member(response, "response")
+    if nested_response is not None:
+        _scale_reasoning_tokens_on_response(nested_response, multiplier, seen)
+
+    _scale_usage_reasoning_tokens(_member(response, "usage"), multiplier)
+    return response
+
+
+def _has_response_policy_target(
+    response: Any,
+    restore_effort: bool,
+    multiplier: int,
+    seen: Optional[set[int]] = None,
+) -> bool:
+    if response is None:
+        return False
+
+    if seen is None:
+        seen = set()
+    response_id = id(response)
+    if response_id in seen:
+        return False
+    seen.add(response_id)
+
+    if restore_effort:
+        if isinstance(response, dict):
+            if response.get("object") == "response" or "reasoning" in response:
+                return True
+        elif getattr(response, "object", None) == "response" or hasattr(response, "reasoning"):
+            return True
+
+    if multiplier > 1 and _member(response, "usage") is not None:
+        return True
+
+    nested_response = _member(response, "response")
+    if nested_response is not None:
+        return _has_response_policy_target(nested_response, restore_effort, multiplier, seen)
+    return False
 
 
 def _set_effort_on_response(response: Any, requested: str) -> Any:
@@ -224,9 +340,18 @@ def restore_requested_effort(data: dict[str, Any], response: Any) -> Any:
     if context is None:
         return response
     requested = _non_empty_string(context.get("requested"))
-    if not requested:
+    restore_effort = context.get("restore_responses_api") is True
+    multiplier = context.get("reasoning_token_multiplier", 1)
+    if isinstance(multiplier, bool) or not isinstance(multiplier, int):
+        multiplier = 1
+    if not _has_response_policy_target(response, restore_effort, multiplier):
         return response
-    return _set_effort_on_response(response, requested)
+
+    transformed_response = copy.deepcopy(response)
+    if restore_effort and requested:
+        _set_effort_on_response(transformed_response, requested)
+    _scale_reasoning_tokens_on_response(transformed_response, multiplier)
+    return transformed_response
 
 
 class ReasoningPolicyHandler(CustomLogger):
@@ -267,14 +392,24 @@ class ReasoningPolicyHandler(CustomLogger):
         # pass-through and do not repeat policy parsing for every token.
         context = _policy_context(request_data)
         requested = _non_empty_string(context.get("requested")) if context else None
-        if not requested:
+        restore_effort = bool(context and context.get("restore_responses_api") is True)
+        multiplier = context.get("reasoning_token_multiplier", 1) if context else 1
+        if isinstance(multiplier, bool) or not isinstance(multiplier, int):
+            multiplier = 1
+        if not restore_effort and multiplier <= 1:
             async for chunk in response:
                 yield chunk
             return
 
         async for chunk in response:
             try:
-                yield _set_effort_on_response(chunk, requested)
+                if not _has_response_policy_target(chunk, restore_effort, multiplier):
+                    yield chunk
+                    continue
+                transformed_chunk = copy.deepcopy(chunk)
+                if restore_effort and requested:
+                    _set_effort_on_response(transformed_chunk, requested)
+                yield _scale_reasoning_tokens_on_response(transformed_chunk, multiplier)
             except Exception as exc:
                 print(f"[REASONING-POLICY] stream restore failed open: {exc}")
                 yield chunk
