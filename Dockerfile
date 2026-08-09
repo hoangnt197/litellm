@@ -116,7 +116,6 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PRISMA_CLI_QUERY_ENGINE_TYPE=binary \
     PRISMA_OFFLINE_MODE=true
 
-COPY deployments/production/config.yaml /app/config.yaml
 COPY deployments/production/reasoning_policy.py /app/reasoning_policy.py
 
 # Copy only what runtime needs. The application is installed inside the venv;

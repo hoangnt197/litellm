@@ -1,8 +1,8 @@
 # Production image
 
-This directory contains the routing configuration and custom callback shipped
-inside the production image. Secrets remain outside Git and are injected at
-runtime through an environment file on each node.
+This directory contains the custom callback shipped inside the production
+image. Routing configuration and secrets remain outside Git and are mounted or
+injected at runtime on each node.
 
 Build and test locally:
 
