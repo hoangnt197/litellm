@@ -3170,21 +3170,31 @@ class Logging(LiteLLMLoggingBaseClass):
             (ResponseCompletedEvent, ResponseIncompleteEvent, ResponseFailedEvent),
         ):
             ## return unified Usage object
-            if isinstance(result.response.usage, ResponseAPIUsage):
-                transformed_usage = ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
-                    result.response.usage
+            # Some OpenAI-compatible Responses API adapters build lifecycle
+            # events with ``response`` as a serialized dict instead of a
+            # ResponsesAPIResponse instance. Success logging must remain
+            # non-blocking for both shapes.
+            response = result.response
+            usage = (
+                response.get("usage") if isinstance(response, dict) else response.usage
+            )
+            if isinstance(usage, ResponseAPIUsage):
+                transformed_usage = (
+                    ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+                        usage
+                    )
                 )
                 # Set as dict instead of Usage object so model_dump() serializes it correctly
-                setattr(
-                    result.response,
-                    "usage",
-                    (
-                        transformed_usage.model_dump()
-                        if hasattr(transformed_usage, "model_dump")
-                        else dict(transformed_usage)
-                    ),
+                serialized_usage = (
+                    transformed_usage.model_dump()
+                    if hasattr(transformed_usage, "model_dump")
+                    else dict(transformed_usage)
                 )
-            return result.response
+                if isinstance(response, dict):
+                    response["usage"] = serialized_usage
+                else:
+                    setattr(response, "usage", serialized_usage)
+            return response
         else:
             return None
 

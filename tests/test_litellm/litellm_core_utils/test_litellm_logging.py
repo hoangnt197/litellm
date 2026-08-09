@@ -2478,6 +2478,37 @@ def test_get_assembled_streaming_response_returns_result_for_streaming():
     assert assembled is result
 
 
+def test_get_assembled_streaming_response_accepts_dict_response_on_lifecycle_event():
+    """OpenAI-compatible adapters may emit lifecycle events with a dict response."""
+    import datetime
+
+    from litellm.types.llms.openai import (
+        ResponseAPIUsage,
+        ResponseCompletedEvent,
+        ResponsesAPIStreamEvents,
+    )
+
+    logging_obj = _make_logging_obj(stream=True)
+    usage = ResponseAPIUsage(input_tokens=3, output_tokens=5, total_tokens=8)
+    result = ResponseCompletedEvent.model_construct(
+        type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+        response={"id": "resp-1", "usage": usage},
+    )
+
+    assembled = logging_obj._get_assembled_streaming_response(
+        result=result,
+        start_time=datetime.datetime.now(),
+        end_time=datetime.datetime.now(),
+        is_async=True,
+        streaming_chunks=[],
+    )
+
+    assert isinstance(assembled, dict)
+    assert assembled["id"] == "resp-1"
+    assert assembled["usage"]["prompt_tokens"] == 3
+    assert assembled["usage"]["completion_tokens"] == 5
+
+
 def test_streaming_success_handler_includes_vertex_ai_metadata_in_standard_logging():
     """Assembled streaming responses should include Vertex AI metadata in logging payload."""
     import datetime
