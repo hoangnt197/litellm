@@ -1,0 +1,56 @@
+name: Production image
+
+on:
+  push:
+    branches:
+      - shortlab-production
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: production-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - uses: docker/build-push-action@0adf9959216b96bec444f325f1e493d4aa344497
+        with:
+          context: .
+          target: runtime
+          load: true
+          platforms: linux/amd64
+          tags: ghcr.io/${{ github.repository_owner }}/litellm:sha-${{ github.sha }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            SOURCE_REPOSITORY=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test production policy offline
+        run: >-
+          docker run --rm --network none --entrypoint python
+          --volume "${{ github.workspace }}/deployments/production/test_reasoning_policy.py:/app/test_reasoning_policy.py:ro"
+          ghcr.io/${{ github.repository_owner }}/litellm:sha-${{ github.sha }}
+          /app/test_reasoning_policy.py
+
+      - name: Push commit-addressed image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/litellm:sha-${{ github.sha }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+          docker push "$IMAGE"
