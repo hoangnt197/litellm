@@ -10,6 +10,7 @@ from litellm.types.llms.openai import (
 
 from reasoning_policy import (
     ReasoningPolicyHandler,
+    _reasoning_token_multiplier,
     apply_reasoning_policy,
     restore_requested_effort,
 )
@@ -78,7 +79,14 @@ class ReasoningPolicyTests(unittest.IsolatedAsyncioTestCase):
         apply_reasoning_policy(self.auth, unmapped, "aresponses")
         self.assertEqual(unmapped["reasoning"]["effort"], "medium")
 
-    def test_non_streaming_response_restores_requested_effort_without_one_level_scaling(self) -> None:
+    def test_effort_tiers_scale_by_their_configured_distance(self) -> None:
+        self.assertEqual(_reasoning_token_multiplier("low", "low"), 1)
+        self.assertEqual(_reasoning_token_multiplier("medium", "low"), 2)
+        self.assertEqual(_reasoning_token_multiplier("xhigh", "high"), 2)
+        self.assertEqual(_reasoning_token_multiplier("max", "high"), 4)
+        self.assertEqual(_reasoning_token_multiplier("ultra", "high"), 4)
+
+    def test_non_streaming_response_restores_requested_effort_and_scales_usage(self) -> None:
         data = {
             "model": "gpt-5.6-sol",
             "reasoning": {"effort": "xhigh", "summary": "auto"},
@@ -94,10 +102,11 @@ class ReasoningPolicyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(restored["reasoning"]["effort"], "xhigh")
         self.assertEqual(restored["reasoning"]["summary"], "auto")
-        self.assertEqual(restored["usage"]["output_tokens_details"]["reasoning_tokens"], 45)
+        self.assertEqual(restored["usage"]["output_tokens_details"]["reasoning_tokens"], 90)
+        self.assertEqual(restored["usage"]["output_tokens"], 168)
         self.assertEqual(restored["output"], [{"type": "reasoning", "summary": []}])
 
-    def test_max_to_high_doubles_client_usage_without_mutating_actual_usage(self) -> None:
+    def test_max_to_high_quadruples_client_usage_without_mutating_actual_usage(self) -> None:
         data = {
             "model": "gpt-5.6-sol",
             "reasoning": {"effort": "max"},
@@ -119,12 +128,12 @@ class ReasoningPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["reasoning"]["effort"], "high")
         self.assertEqual(response["usage"]["output_tokens_details"]["reasoning_tokens"], 40)
         self.assertEqual(restored["reasoning"]["effort"], "max")
-        self.assertEqual(restored["usage"]["output_tokens_details"]["reasoning_tokens"], 80)
-        self.assertEqual(restored["usage"]["output_tokens"], 140)
-        self.assertEqual(restored["usage"]["total_tokens"], 150)
+        self.assertEqual(restored["usage"]["output_tokens_details"]["reasoning_tokens"], 160)
+        self.assertEqual(restored["usage"]["output_tokens"], 220)
+        self.assertEqual(restored["usage"]["total_tokens"], 230)
         self.assertEqual(restored["usage"]["input_tokens"], 10)
 
-    def test_ultra_to_high_triples_chat_completion_usage(self) -> None:
+    def test_ultra_to_high_matches_max_chat_completion_usage(self) -> None:
         data = {
             "model": "gpt-5.6-sol",
             "reasoning_effort": "ultra",
@@ -141,9 +150,9 @@ class ReasoningPolicyTests(unittest.IsolatedAsyncioTestCase):
         }
         restored = restore_requested_effort(data, response)
 
-        self.assertEqual(restored["usage"]["completion_tokens_details"]["reasoning_tokens"], 90)
-        self.assertEqual(restored["usage"]["completion_tokens"], 160)
-        self.assertEqual(restored["usage"]["total_tokens"], 170)
+        self.assertEqual(restored["usage"]["completion_tokens_details"]["reasoning_tokens"], 120)
+        self.assertEqual(restored["usage"]["completion_tokens"], 190)
+        self.assertEqual(restored["usage"]["total_tokens"], 200)
         self.assertEqual(restored["usage"]["prompt_tokens"], 10)
 
     async def test_stream_lifecycle_event_restores_pydantic_response(self) -> None:
@@ -182,9 +191,9 @@ class ReasoningPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.response.reasoning["effort"], "high")
         self.assertEqual(event.response.usage.output_tokens_details.reasoning_tokens, 30)
         self.assertEqual(chunks[0].response.reasoning["effort"], "ultra")
-        self.assertEqual(chunks[0].response.usage.output_tokens_details.reasoning_tokens, 90)
-        self.assertEqual(chunks[0].response.usage.output_tokens, 160)
-        self.assertEqual(chunks[0].response.usage.total_tokens, 170)
+        self.assertEqual(chunks[0].response.usage.output_tokens_details.reasoning_tokens, 120)
+        self.assertEqual(chunks[0].response.usage.output_tokens, 190)
+        self.assertEqual(chunks[0].response.usage.total_tokens, 200)
 
 
 if __name__ == "__main__":

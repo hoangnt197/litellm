@@ -31,12 +31,15 @@ from litellm.integrations.custom_logger import CustomLogger
 _CONTEXT_KEY = "_reasoning_policy_context"
 _RESPONSE_CALL_TYPES = frozenset({"responses", "aresponses"})
 _EFFORT_LEVELS = {
-    "low": 1,
+    # The values intentionally express the reported-token distance between
+    # efforts. ``max`` and ``ultra`` share a tier, so falling either back to
+    # ``high`` produces the same client-facing multiplier.
+    "low": 0,
     "medium": 2,
-    "high": 3,
-    "xhigh": 4,
-    "max": 5,
-    "ultra": 6,
+    "high": 4,
+    "xhigh": 6,
+    "max": 8,
+    "ultra": 8,
 }
 
 
