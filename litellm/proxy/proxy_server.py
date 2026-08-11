@@ -8781,12 +8781,13 @@ def _blocked_response_usage(original_response: Optional[Any]) -> "litellm.Usage"
     A post-call block replaces the LLM's response with the violation message,
     but the upstream call already consumed tokens -- report that real usage
     (carried on ``ModifyResponseException.original_response``) rather than
-    discarding it. A production pre-call block carries locally measured usage,
-    while an older guardrail without that carrier remains a zero-usage block.
+    discarding it. Pre-call blocks never invoked the LLM (no original_response),
+    so usage is zero.
     """
-    from litellm.proxy.guardrails.guardrail_response_utils import guardrail_response_usage
-
-    return guardrail_response_usage(original_response)
+    usage = getattr(original_response, "usage", None) if original_response is not None else None
+    if isinstance(usage, litellm.Usage):
+        return usage
+    return litellm.Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
 
 
 @router.post(
@@ -8886,7 +8887,13 @@ async def chat_completion(
     except ModifyResponseException as e:
         # Guardrail flagged content in passthrough mode - return 200 with violation message
         _data = e.request_data
+        # Capture logging_obj before post_call_failure_hook pops it from _data.
         _logging_obj = _data.get("litellm_logging_obj")
+        await proxy_logging_obj.post_call_failure_hook(
+            user_api_key_dict=user_api_key_dict,
+            original_exception=e,
+            request_data=_data,
+        )
         _chat_response = litellm.ModelResponse()
         _chat_response.model = e.model  # type: ignore
         _chat_response.choices[0].message.content = e.message  # type: ignore
@@ -8894,14 +8901,6 @@ async def chat_completion(
         # Report the blocked LLM response's real usage (set before the stream
         # branch so both paths carry it); zero for pre-call blocks.
         _chat_response.usage = _blocked_response_usage(e.original_response)  # type: ignore
-        from litellm.proxy.guardrails.guardrail_response_utils import record_local_guardrail_success
-
-        _chat_response = await record_local_guardrail_success(
-            proxy_logging_obj=proxy_logging_obj,
-            user_api_key_dict=user_api_key_dict,
-            request_data=_data,
-            response=_chat_response,
-        )
 
         if data.get("stream", None) is not None and data["stream"] is True:
             _iterator = litellm.utils.ModelResponseIterator(model_response=_chat_response, convert_to_delta=True)

@@ -1,6 +1,8 @@
 import asyncio
 import json
+import time
 from typing import Any, AsyncIterator, Dict, Optional, cast
+from uuid import uuid4
 
 import fastapi
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -15,11 +17,7 @@ from litellm.proxy.auth.user_api_key_auth import (
     user_api_key_auth_websocket,
 )
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
-from litellm.proxy.guardrails.guardrail_response_utils import (
-    build_guardrail_responses_response,
-    record_local_guardrail_success,
-)
-from litellm.types.llms.openai import ResponsesAPIResponse
+from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.responses.main import DeleteResponseResult
 
 router = APIRouter()
@@ -259,13 +257,23 @@ async def responses_api(
     except ModifyResponseException as e:
         # Guardrail passthrough: return violation message in Responses API format (200)
         _data = e.request_data
-        response_obj = build_guardrail_responses_response(e, fallback_model=data.get("model"))
-        return await record_local_guardrail_success(
-            proxy_logging_obj=proxy_logging_obj,
+        await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
+            original_exception=e,
             request_data=_data,
-            response=response_obj,
         )
+
+        violation_text = e.message
+        response_obj = ResponsesAPIResponse(
+            id=f"resp_{uuid4()}",
+            object="response",
+            created_at=int(time.time()),
+            model=e.model or data.get("model"),
+            output=cast(Any, [{"content": [{"type": "text", "text": violation_text}]}]),
+            status="completed",
+            usage=ResponseAPIUsage(input_tokens=0, output_tokens=0, total_tokens=0),
+        )
+        return response_obj
     except Exception as e:
         raise await processor._handle_llm_api_exception(
             e=e,

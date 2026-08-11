@@ -40,15 +40,11 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Test production policy offline
-        run: |
-          docker run --rm --network none --entrypoint python \
-            --volume "${{ github.workspace }}/deployments/production/test_reasoning_policy.py:/app/test_reasoning_policy.py:ro" \
-            ghcr.io/${{ github.repository_owner }}/litellm:sha-${{ github.sha }} \
-            /app/test_reasoning_policy.py
-          docker run --rm --network none --entrypoint python \
-            --volume "${{ github.workspace }}/deployments/production/test_cyber_abuse_guard.py:/app/test_cyber_abuse_guard.py:ro" \
-            ghcr.io/${{ github.repository_owner }}/litellm:sha-${{ github.sha }} \
-            /app/test_cyber_abuse_guard.py
+        run: >-
+          docker run --rm --network none --entrypoint python
+          --volume "${{ github.workspace }}/deployments/production/test_reasoning_policy.py:/app/test_reasoning_policy.py:ro"
+          ghcr.io/${{ github.repository_owner }}/litellm:sha-${{ github.sha }}
+          /app/test_reasoning_policy.py
 
       - name: Push commit-addressed image
         env:

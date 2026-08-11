@@ -117,7 +117,6 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PRISMA_OFFLINE_MODE=true
 
 COPY deployments/production/reasoning_policy.py /app/reasoning_policy.py
-COPY deployments/production/cyber_abuse_guard.py /app/cyber_abuse_guard.py
 
 # Copy only what runtime needs. The application is installed inside the venv;
 # the rest of the builder's /app is source and build metadata that must not
