@@ -29,7 +29,6 @@ REFUSAL_MESSAGE = (
 )
 
 _WINDOW = 96
-_NON_USER_ROLES = frozenset({"system", "developer", "assistant", "tool", "function"})
 
 _HARMFUL_NOUN = r"malware|ransomware|keylogger|trojans?|spyware|botnets?|rootkits?|phishing"
 
@@ -174,29 +173,52 @@ def _iter_text_values(value: Any) -> Iterable[str]:
 
 
 def _is_user_authored_item(item: dict[str, Any]) -> bool:
-    role = item.get("role")
-    return role not in _NON_USER_ROLES
+    """Return true only for an explicitly user-authored conversation item.
+
+    Responses API history also contains role-less function-call and tool-output
+    items. Treating a missing role as user input made those historical items
+    (and, more generally, an entire prior conversation) eligible for blocking.
+    """
+    return item.get("role") == "user"
+
+
+def _item_text(item: dict[str, Any]) -> Iterable[str]:
+    """Extract text from one current user item, never its tool arguments."""
+    for key in ("content", "input", "text"):
+        if key in item:
+            yield from _iter_text_values(item[key])
+            return
+
+
+def _latest_user_item_text(items: list[Any], *, allow_raw_text: bool = False) -> Iterable[str]:
+    """Extract only the newest user turn from a conversation history.
+
+    Clients such as Codex resend the complete Responses API history on every
+    turn. A past blocked topic must not make an unrelated newer question fail.
+    A standalone string input remains a current user prompt.
+    """
+    for item in reversed(items):
+        if isinstance(item, dict) and _is_user_authored_item(item):
+            yield from _item_text(item)
+            return
+        if allow_raw_text and isinstance(item, str):
+            yield item
+            return
 
 
 def request_text(data: dict[str, Any]) -> str:
-    """Extract only user-authored text so system/developer safety prompts cannot self-trip."""
+    """Extract the current user turn without re-scanning prior conversation history."""
     parts: list[str] = []
 
     messages = data.get("messages")
     if isinstance(messages, list):
-        for message in messages:
-            if isinstance(message, dict) and _is_user_authored_item(message):
-                parts.extend(_iter_text_values(message.get("content")))
+        parts.extend(_latest_user_item_text(messages))
 
     input_value = data.get("input")
     if isinstance(input_value, str):
         parts.append(input_value)
     elif isinstance(input_value, list):
-        for item in input_value:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and _is_user_authored_item(item):
-                parts.extend(_iter_text_values(item))
+        parts.extend(_latest_user_item_text(input_value, allow_raw_text=True))
 
     prompt = data.get("prompt")
     if isinstance(prompt, str):
