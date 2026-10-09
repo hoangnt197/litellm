@@ -637,6 +637,20 @@ def get_logging_payload(
         if rejected_as_unknown_model or failed_with_prompt_shaped_model or model_is_malformed
         else resolved_model
     )
+    # ShortLab compatibility: optionally report the public model-group name
+    # in spend logs instead of the selected deployment/model name.
+    report_model_group = os.getenv("LITELLM_SPEND_LOG_MODEL_GROUP_AS_MODEL", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if report_model_group and model_name != UNKNOWN_MODEL_SPEND_LOG_MODEL:
+        if _model_group:
+            model_name = _model_group
+        elif "__" in model_name:
+            model_name = model_name.rsplit("__", 1)[1]
+        else:
+            model_name = model_name.removeprefix("llm_")
     model_is_placeholdered: Final = model_name == UNKNOWN_MODEL_SPEND_LOG_MODEL
     persisted_model_group: Final = (
         ""
